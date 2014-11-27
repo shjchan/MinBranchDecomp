@@ -1,4 +1,5 @@
 function [sol,NP] = MBD(problem,param)
+%[sol,NP] = MBD(problem,param)
 %Find a minimal branching decomposition given the network stoichiometry information.
 %function input:
 %problem is a structure with the following fields:
@@ -21,14 +22,15 @@ function [sol,NP] = MBD(problem,param)
 %         certain functions of an EFM.)
 %   w:  weight vector for metabolites, default to be all 1   
 %   (optional fields in 'problem' that can be useful when enumerating 
-%       optimal or/and suboptimal solutions:)
+%       optimal or/and suboptimal solutions. EFM matrix must be provided in this case:)
 %   x0: inital set of EFMs provided, index for EFMs in problem.EFM
 %   sol0: already-found solution, which will be block in the computation.
 %       It is an Ns0 by Nefm logical matrix, where Ns0 is the number of 
 %       already-found solution and Nefm is the number of EFMs. 
 %       '1' in the i-th row and j-th column means the j-th EFM is in the
 %       i-th solution, i.e. EFM(:, sol0(k, :)) is the set of EFMs of the k-th solution.
-%   fval (optional): lower bound for the objective function value 
+%   fval (optional, not recommended, usually diminish performance): 
+%       lower bound for the objective function value 
 %
 %(optional input)
 %param: structure with the following fields:
@@ -53,6 +55,8 @@ function [sol,NP] = MBD(problem,param)
 %   number of locally different paths passing through the i-th metabolite in
 %   the j-th EFM.
 
+%% Pre-processing
+%Assign solver and tolerances
 if exist('param','var')
     if isfield(param,'eps1')
         eps1=param.eps1;
@@ -79,18 +83,19 @@ else
     eps2=10^(-8);
     solver='cobra';
 end
-
+%if no metabolites to be unbalanced
 if ~isfield(problem,'imb')
     problem.imb=[];
 end
-S=problem.CbModel.S; %extract the stoichiometrix matrix [m x Nir+Nre]
+S=problem.CbModel.S; %extract the stoichiometric matrix [m x Nir+Nre]
 rev=logical(problem.CbModel.rev);%extract the reversibility vector
 %transform S into irreversible stoichiometric matrix [m x Nir+2*Nre]
-%Sir=[S | S_reverse of reversible reactions]
-Sir=[S -S(:,rev)];
+Sir=[S -S(:,rev)];%Sir=[S | S_reverse of reversible reactions]
 vir=[problem.flux; -problem.flux(rev)];%transform the flux vector [Nir+2*Nre x 1]
 vir(vir<0)=0;%transform the flux vector
 S4opti=Sir(:,vir~=0);%reduce the matrix to reactions with non-zero fluxes only for optimization [m x Nnz]
+
+%% EFM calculation
 %reduce the matrix to exclude metabolites not to be balanced for calculation of EFMs [m-imb x Nnz]
 S4efm=S4opti;
 S4efm(problem.imb,:)=[];
@@ -126,7 +131,7 @@ if ~isfield(problem,'EFM')||isempty(problem.EFM)  %EFM not user-supplied
             changeCobraSolver(solverCobra,'MILP');
         end
     end
-else    %user-supplied EFM matrix
+else    % Or user-supplied EFM matrix
     EFM=problem.EFM; %user supplied EFM matrix, assumed to be [Nir+Nre x K0]
     EFMir=[EFM;-EFM(rev,:)]; %transform it into irreversible [Nir+2*Nre x K0]
     EFMir(EFMir<0)=0;
@@ -138,25 +143,26 @@ else    %user-supplied EFM matrix
     end
     EFMir=EFMir(:,cover);%exclude those EFMs with alpha=0
     EFMir=EFMir(vir~=0,:); %retain rows with non-zero fluxes only [Nnz x K]
-    if isfield(problem,'x0')
+    if isfield(problem,'x0') %check provided initial solution x0
         covInd=find(cover);
         if islogical(problem.x0) && numel(problem.x0)==size(problem.EFM,2)
-            x0Ind=find(problem.x0);
+            x0Ind=find(problem.x0); %get the indices of EFMs
         else
             x0Ind=problem.x0;
         end
-        [tf,x0]=ismember(x0Ind(:),covInd(:));
+        [tf,x0]=ismember(x0Ind(:),covInd(:)); %check if the provided EFMs are contributable to the flux distribution
         if any(~tf) || isempty(tf)
             warning('probelm.x0 not valid index of problem.EFM')
             x0good=false;
         end
     end
-    if isfield(problem,'sol0')
+    if isfield(problem,'sol0') %exclude already-found solutions
         if ~isempty(problem.sol0)
             sol0=problem.sol0(:,cover);
         end
     end
 end
+%assign weights
 if ~isfield(problem,'w')||isempty(problem.w)
     w=ones(1,size(S,1));    %default weight vector
 else
